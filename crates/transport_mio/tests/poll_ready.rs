@@ -16,9 +16,12 @@ fn loopback() -> BindConfig {
 
 #[test]
 fn poll_ready_returns_before_timeout_when_datagram_arrives() {
-    let mut receiver =
-        UdpTransport::bind(loopback(), RecvBufConfig::default(), SendBufConfig::default())
-            .expect("bind receiver");
+    let mut receiver = UdpTransport::bind(
+        loopback(),
+        RecvBufConfig::default(),
+        SendBufConfig::default(),
+    )
+    .expect("bind receiver");
     let recv_addr = receiver.local_addr().expect("local_addr");
 
     let sender = UdpSocket::bind("127.0.0.1:0").expect("sender bind");
@@ -47,9 +50,12 @@ fn poll_ready_returns_before_timeout_when_datagram_arrives() {
 
 #[test]
 fn poll_ready_returns_after_timeout_when_idle() {
-    let mut receiver =
-        UdpTransport::bind(loopback(), RecvBufConfig::default(), SendBufConfig::default())
-            .expect("bind receiver");
+    let mut receiver = UdpTransport::bind(
+        loopback(),
+        RecvBufConfig::default(),
+        SendBufConfig::default(),
+    )
+    .expect("bind receiver");
     let start = Instant::now();
     receiver
         .poll_ready(Some(Duration::from_millis(50)))
