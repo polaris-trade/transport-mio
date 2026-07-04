@@ -1,6 +1,6 @@
 [package]
 name = "transport_mio"
-description = "Mio-based Transport backend for Polaris networking stack"
+description = "Mio-based Transport backend built on transport-core"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -20,7 +20,10 @@ socket2 = { workspace = true }
 libc = { workspace = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 mockall = { workspace = true }
 rstest = { workspace = true }
+transport_core = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net", "time"] }

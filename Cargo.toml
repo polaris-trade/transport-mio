@@ -21,3 +21,4 @@ mio = { version = "1.0.4", features = ["net", "os-poll", "os-ext"] }
 socket2 = { version = "0.6.4", features = ["all"] }
 libc = "0.2.163"
 parking_lot = "0.12.4"
+tokio = { version = "1.48.0", default-features = false }
