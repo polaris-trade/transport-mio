@@ -9,10 +9,12 @@ use mio::event::Source;
 use mio::{Events, Interest, Poll, Token};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::thread;
 use std::time::Duration;
-use transport_core::{AsPayload, BindConfig, RecvBufConfig, SendBufConfig, TransportError};
+use transport_core::{
+    AsPayload, BindConfig, MulticastInterface, RecvBufConfig, SendBufConfig, TransportError,
+};
 
 const MAX_UDP_DATAGRAM: usize = 65_535;
 const UDP_TOKEN: Token = Token(0);
@@ -137,6 +139,31 @@ impl UdpTransport {
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         Ok(self.local)
+    }
+
+    /// Join an IPv4 or IPv6 multicast group. `interface.v4` picks the local
+    /// v4 interface addr (defaults to `INADDR_ANY`); `interface.v6_scope_id`
+    /// picks the v6 interface index (defaults to 0 = any). `mio` takes the v4
+    /// addrs by reference.
+    pub fn join_multicast(
+        &self,
+        group: IpAddr,
+        interface: MulticastInterface,
+    ) -> Result<(), TransportError> {
+        match group {
+            IpAddr::V4(m) => {
+                let iface = interface.v4.unwrap_or(Ipv4Addr::UNSPECIFIED);
+                self.sock
+                    .join_multicast_v4(&m, &iface)
+                    .map_err(TransportError::Io)
+            }
+            IpAddr::V6(m) => {
+                let scope = interface.v6_scope_id.unwrap_or(0);
+                self.sock
+                    .join_multicast_v6(&m, scope)
+                    .map_err(TransportError::Io)
+            }
+        }
     }
 }
 

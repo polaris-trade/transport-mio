@@ -134,3 +134,37 @@ impl TransportBind for MioTransport {
         Ok(MioTransport::Tcp(t))
     }
 }
+
+// `transport_core::UdpTransport` (not the inner `crate::udp::UdpTransport`
+// struct re-exported above). Multicast join + unconnected send for the Udp
+// variant; the Tcp variant rejects both. `send_to` does sync non-blocking
+// work under the async signature, matching the rest of the mio backend.
+impl transport_core::UdpTransport for MioTransport {
+    async fn join_multicast(
+        &mut self,
+        group: std::net::IpAddr,
+        interface: transport_core::MulticastInterface,
+    ) -> Result<(), TransportError> {
+        match self {
+            MioTransport::Udp(u) => u.join_multicast(group, interface),
+            MioTransport::Tcp(_) => Err(TransportError::Unsupported {
+                name: "mio-tcp",
+                reason: "multicast join unsupported on TCP",
+            }),
+        }
+    }
+
+    async fn send_to(
+        &mut self,
+        buf: &[u8],
+        addr: std::net::SocketAddr,
+    ) -> Result<(), TransportError> {
+        match self {
+            MioTransport::Udp(u) => u.send_to(buf, addr).map(|_| ()),
+            MioTransport::Tcp(_) => Err(TransportError::Unsupported {
+                name: "mio-tcp",
+                reason: "send_to unsupported on TCP",
+            }),
+        }
+    }
+}
