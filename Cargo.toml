@@ -11,7 +11,7 @@ homepage = "https://github.com/polaris-trade"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-transport_core = { git = "https://github.com/polaris-trade/transport-core", tag = "transport_core-v0.2.0" }
+transport_core = { version = "0.2.0", registry = "polaris" }
 
 thiserror = "2.0.18"
 mockall = "0.15"

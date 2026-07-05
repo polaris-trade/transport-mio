@@ -34,6 +34,8 @@ Public enum unifying UDP and TCP under one `Transport` impl. Consumer owns the e
 
 [[crates/transport_mio/src/lib.rs#MioTransport]] is the enum consumers depend on. `impl Transport` and `impl TransportBind` dispatch across the `Udp` and `Tcp` variants uniformly. `poll_event(cx)` ignores the waker and returns from the internal event queue populated by the last `poll_ready` call, matching the mio "consumer drives the loop" model.
 
+`impl transport_core::UdpTransport` adds multicast group join (`join_multicast`, dispatching IPv4 vs IPv6 to the inner socket's `join_multicast_v4`/`v6`, which `mio` takes by reference for v4) plus unconnected `send_to`. The `Tcp` variant rejects both with `TransportError::Unsupported`; the `send_to` body does sync non-blocking work under the async signature, like the rest of the backend.
+
 [[crates/transport_mio/src/lib.rs#MioFrame]] and [[crates/transport_mio/src/lib.rs#MioEvent]] are the matching enums for the borrowed frame and per-poll event surface. `MioEvent::Udp(SocketAddr)` carries the sender addr; `MioEvent::Tcp(usize)` carries the byte count.
 
 `bind_udp` and `connect_tcp` are `async fn` for `TransportBind` shape compliance but bodies do sync work and complete on first poll, so tokio callers and hand-rolled executor callers both work.
