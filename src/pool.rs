@@ -1,91 +1,72 @@
-//! Naive Vec-backed buffer pool. Free list of pre-sized `Vec<u8>` slabs;
-//! `Drop` on the slab returns the buffer to the free list. `SharedVecPool`
-//! is the `Arc`-wrapped handle that implements `BufferPool`.
+//! Bounded slab pool with a fixed slot array and a parking_lot free list.
+//!
+//! Each slab is a `Vec<u8>` behind `UnsafeCell`. The free list gates
+//! exclusive slot ownership: `acquire` pops an index, `VecSlab::drop`
+//! pushes it back, so at most one `VecSlab` ever holds a given index.
+//! `BufferPool` is implemented on the [`SharedVecPool`] newtype so each
+//! `VecSlab` can carry an owned back-reference for `Drop`-based reclaim.
+
+use std::{cell::UnsafeCell, sync::Arc};
 
 use parking_lot::Mutex;
-use std::mem;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use transport_core::BufferPool;
 
 pub struct VecPool {
-    free: Mutex<Vec<Vec<u8>>>,
-    capacity: usize,
+    slabs: Box<[UnsafeCell<Vec<u8>>]>,
+    free: Mutex<Vec<u32>>,
     slab_size: usize,
-    in_use: AtomicUsize,
 }
 
+// SAFETY: slot access gated by the free list. `acquire` pops an index and
+// hands it to a fresh `VecSlab`; `VecSlab::drop` pushes it back. No two
+// `VecSlab`s ever hold the same index, so `UnsafeCell` interior mutation
+// stays single-owner even though `VecPool` is shared across threads.
+unsafe impl Sync for VecPool {}
+
 impl VecPool {
-    pub fn new(capacity: usize, slab_size: usize) -> Self {
-        let mut free = Vec::with_capacity(capacity);
-        for _ in 0..capacity {
-            free.push(vec![0u8; slab_size]);
-        }
+    fn build(capacity: usize, slab_size: usize) -> Self {
+        assert!(capacity > 0, "capacity must be non-zero");
+        assert!(slab_size > 0, "slab_size must be non-zero");
+        assert!(capacity <= u32::MAX as usize, "capacity exceeds u32::MAX");
+        // Zero-init once so recv has a full-width `&mut [u8]` to land into; the
+        // per-message cost is nil since slabs are reused, never reallocated.
+        let slabs = (0..capacity)
+            .map(|_| UnsafeCell::new(vec![0u8; slab_size]))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let free: Vec<u32> = (0..capacity as u32).rev().collect();
         Self {
+            slabs,
             free: Mutex::new(free),
-            capacity,
             slab_size,
-            in_use: AtomicUsize::new(0),
         }
     }
 
     pub fn slab_size(&self) -> usize {
         self.slab_size
     }
-
-    fn take_slab(&self) -> Option<Vec<u8>> {
-        self.free.lock().pop()
-    }
-
-    fn return_slab(&self, mut buf: Vec<u8>) {
-        buf.clear();
-        buf.resize(self.slab_size, 0);
-        self.free.lock().push(buf);
-    }
 }
 
+/// Reference-counted handle around [`VecPool`]. Implements [`BufferPool`] so
+/// backends can share it across tasks and hand out [`VecSlab`] frames whose
+/// `Drop` returns the slot to the free list.
 #[derive(Clone)]
-pub struct SharedVecPool(pub Arc<VecPool>);
+pub struct SharedVecPool(Arc<VecPool>);
 
 impl SharedVecPool {
     pub fn new(capacity: usize, slab_size: usize) -> Self {
-        Self(Arc::new(VecPool::new(capacity, slab_size)))
+        Self(Arc::new(VecPool::build(capacity, slab_size)))
     }
 
-    pub fn acquire(&self, len: usize) -> Option<VecSlab> {
-        if len > self.0.slab_size {
-            return None;
-        }
-        let buf = self.0.take_slab()?;
-        self.0.in_use.fetch_add(1, Ordering::Relaxed);
-        Some(VecSlab {
-            buf,
-            len,
-            pool: Arc::clone(&self.0),
-        })
-    }
-}
-
-impl BufferPool for SharedVecPool {
-    type Slab = VecSlab;
-
-    fn acquire(&self, len: usize) -> Option<Self::Slab> {
-        self.acquire(len)
-    }
-
-    fn capacity(&self) -> usize {
-        self.0.capacity
-    }
-
-    fn in_use(&self) -> usize {
-        self.0.in_use.load(Ordering::Relaxed)
+    pub fn slab_size(&self) -> usize {
+        self.0.slab_size
     }
 }
 
 pub struct VecSlab {
-    buf: Vec<u8>,
-    len: usize,
     pool: Arc<VecPool>,
+    index: u32,
+    len: usize,
 }
 
 impl VecSlab {
@@ -96,18 +77,59 @@ impl VecSlab {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    /// Full-width mutable view of the backing slab for a recv to write into.
+    /// Yields the whole `slab_size` slice; the caller records how many bytes
+    /// landed with [`VecSlab::set_len`], which then bounds `as_ref`.
+    pub fn buf_mut(&mut self) -> &mut [u8] {
+        // SAFETY: single-owner index guarantee (see type docs) plus exclusive
+        // `&mut self` means no other `VecSlab` aliases this slot.
+        let vec = unsafe { &mut *self.pool.slabs[self.index as usize].get() };
+        &mut vec[..]
+    }
+
+    /// Record how many bytes a recv landed into [`VecSlab::buf_mut`]. Bounds the
+    /// slice returned by `AsRef<[u8]>`.
+    pub fn set_len(&mut self, len: usize) {
+        self.len = len;
+    }
 }
 
 impl AsRef<[u8]> for VecSlab {
     fn as_ref(&self) -> &[u8] {
-        &self.buf[..self.len]
+        // SAFETY: single-owner index guarantee, read-only view.
+        let vec = unsafe { &*self.pool.slabs[self.index as usize].get() };
+        let end = self.len.min(vec.len());
+        &vec[..end]
     }
 }
 
 impl Drop for VecSlab {
     fn drop(&mut self) {
-        let buf = mem::take(&mut self.buf);
-        self.pool.return_slab(buf);
-        self.pool.in_use.fetch_sub(1, Ordering::Relaxed);
+        self.pool.free.lock().push(self.index);
+    }
+}
+
+impl BufferPool for SharedVecPool {
+    type Slab = VecSlab;
+
+    fn acquire(&self, len: usize) -> Option<VecSlab> {
+        if len > self.0.slab_size {
+            return None;
+        }
+        let index = self.0.free.lock().pop()?;
+        Some(VecSlab {
+            pool: Arc::clone(&self.0),
+            index,
+            len: 0,
+        })
+    }
+
+    fn capacity(&self) -> usize {
+        self.0.slabs.len()
+    }
+
+    fn in_use(&self) -> usize {
+        self.0.slabs.len() - self.0.free.lock().len()
     }
 }
