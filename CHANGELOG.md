@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
+## [0.3.0](https://github.com/polaris-trade/transport-mio/compare/transport_mio-v0.2.1...transport_mio-v0.3.0) (2026-07-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **recv:** migrate mio backend to the owned-frame recv seam ([#10](https://github.com/polaris-trade/transport-mio/issues/10))
+
+### Features
+
+* **recv:** migrate mio backend to the owned-frame recv seam ([#10](https://github.com/polaris-trade/transport-mio/issues/10)) ([2250369](https://github.com/polaris-trade/transport-mio/commit/22503698e01872475b8846cc1b5ac0fb72b1d064))
+
 ## [0.2.1](https://github.com/polaris-trade/transport-mio/compare/transport_mio-v0.2.0...transport_mio-v0.2.1) - 2026-07-07
 
 ### Refactor
@@ -25,4 +36,3 @@ registers READABLE|WRITABLE and drains the initial writable in
 wait_connect so the same invariant holds post-connect. impl Transport
 and impl TransportBind use async fn bodies that run sync work under the
 covers, so tokio callers and hand-rolled executors both work.
-
