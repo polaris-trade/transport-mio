@@ -1,20 +1,26 @@
 //! TCP path built on `mio::net::TcpStream`.
 //!
-//! Owns its own `mio::Poll`. `connect` opens the stream, applies buffer
-//! sizes via `socket2::SockRef`, then registers for `READABLE | WRITABLE`.
-//! `poll_ready(timeout)` drains readiness; `try_recv` reads one chunk per
-//! call. Send loops on `WouldBlock` with a short `poll_ready` wait until
-//! the whole buffer is written.
+//! Runtime-free. `connect` opens the stream, applies buffer sizes via
+//! `socket2::SockRef`, registers on a fresh `mio::Poll`, then blocks in
+//! `wait_connect` until the initial writable event lands. `recv_into` lands one
+//! read directly into the caller's uninitialised buffer via `socket2` (std
+//! `Read` needs an initialised buffer), the single copy in the stream path.
 
-use mio::event::Source;
-use mio::{Events, Interest, Poll, Token};
+use std::{
+    io::{self, Write},
+    mem::MaybeUninit,
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
+
+use mio::{Events, Interest, Poll, Token, event::Source};
 use socket2::SockRef;
-use std::io::{self, Read, Write};
-use std::net::SocketAddr;
-use std::time::Duration;
-use transport_core::{AsPayload, BindConfig, RecvBufConfig, SendBufConfig, TransportError};
+use transport_core::{
+    AffinityConfig, BindConfig, RecvBufConfig, RingConfig, SendBufConfig, TransportError,
+};
 
-const MAX_TCP_CHUNK: usize = 64 * 1024;
+use crate::{pool::SharedVecPool, udp::warn_affinity};
+
 const TCP_TOKEN: Token = Token(1);
 const EVENTS_CAP: usize = 16;
 
@@ -22,20 +28,25 @@ pub struct TcpTransport {
     stream: mio::net::TcpStream,
     poll: Poll,
     events: Events,
-    buf: Vec<u8>,
-    last_len: usize,
-    has_frame: bool,
-    readable: bool,
-    writable: bool,
+    // Present for uniform `PoolAccess`; the stream path lands into caller-owned
+    // buffers via `recv_into`, so it never draws slabs. Size it small via
+    // `RingConfig` for a stream-only transport.
+    pool: SharedVecPool,
     peer: SocketAddr,
 }
 
 impl TcpTransport {
+    /// Connect to `BindConfig::addr` and block until the handshake completes.
+    /// Fully sync (no runtime); `ring` sizes the (unused-on-recv) pool and
+    /// `affinity` is warned since mio owns no thread to pin.
     pub fn connect(
         bind: BindConfig,
         rx: RecvBufConfig,
         tx: SendBufConfig,
+        ring: RingConfig,
+        affinity: AffinityConfig,
     ) -> Result<Self, TransportError> {
+        warn_affinity(&affinity, "mio-tcp");
         let mut stream =
             mio::net::TcpStream::connect(bind.addr).map_err(|e| TransportError::BindFailed {
                 addr: bind.addr.to_string(),
@@ -54,15 +65,10 @@ impl TcpTransport {
             stream,
             poll,
             events: Events::with_capacity(EVENTS_CAP),
-            buf: vec![0u8; MAX_TCP_CHUNK],
-            last_len: 0,
-            has_frame: false,
-            readable: false,
-            writable: false,
+            pool: SharedVecPool::new(ring.slab_count, ring.slab_size),
             peer: bind.addr,
         };
-        // Wait for connect to complete: mio TCP connect returns immediately;
-        // real readiness arrives via WRITABLE.
+        // mio TCP connect returns immediately; real readiness arrives WRITABLE.
         inst.wait_connect()?;
         if let Ok(p) = inst.stream.peer_addr() {
             inst.peer = p;
@@ -71,16 +77,22 @@ impl TcpTransport {
     }
 
     fn wait_connect(&mut self) -> Result<(), TransportError> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            self.poll_ready(Some(Duration::from_millis(100)))?;
-            if self.writable {
+            self.poll
+                .poll(&mut self.events, Some(Duration::from_millis(100)))
+                .map_err(TransportError::Io)?;
+            let writable = self
+                .events
+                .iter()
+                .any(|ev| ev.token() == TCP_TOKEN && ev.is_writable());
+            if writable {
                 if let Some(e) = self.stream.take_error().map_err(TransportError::Io)? {
                     return Err(TransportError::Io(e));
                 }
                 return Ok(());
             }
-            if std::time::Instant::now() >= deadline {
+            if Instant::now() >= deadline {
                 return Err(TransportError::Io(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "tcp connect timed out",
@@ -89,53 +101,43 @@ impl TcpTransport {
         }
     }
 
-    pub fn poll_ready(&mut self, timeout: Option<Duration>) -> Result<(), TransportError> {
-        self.poll
-            .poll(&mut self.events, timeout)
-            .map_err(TransportError::Io)?;
-        for ev in self.events.iter() {
-            if ev.token() == TCP_TOKEN {
-                if ev.is_readable() {
-                    self.readable = true;
-                }
-                if ev.is_writable() {
-                    self.writable = true;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub fn try_recv(&mut self) -> Result<Option<usize>, TransportError> {
-        if !self.readable {
-            return Ok(None);
-        }
-        match self.stream.read(&mut self.buf) {
+    /// Land one read into `dst` (typically a decode buffer's spare capacity).
+    /// Returns the byte count written; the caller marks exactly that many bytes
+    /// initialised. `Ok(0)` means nothing was ready. A clean peer close surfaces
+    /// as `UnexpectedEof` so callers can react rather than spin on empty reads.
+    pub fn recv_into(&mut self, dst: &mut [MaybeUninit<u8>]) -> Result<usize, TransportError> {
+        let sock = SockRef::from(&self.stream);
+        match sock.recv(dst) {
             Ok(0) => Err(TransportError::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "peer closed",
             ))),
-            Ok(n) => {
-                self.last_len = n;
-                self.has_frame = true;
-                Ok(Some(n))
-            }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                self.readable = false;
-                Ok(None)
-            }
+            Ok(n) => Ok(n),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(0),
             Err(e) => Err(TransportError::Io(e)),
         }
     }
 
-    pub fn peek_frame(&self) -> Option<TcpFrame<'_>> {
-        if self.has_frame {
-            Some(TcpFrame {
-                bytes: &self.buf[..self.last_len],
-            })
-        } else {
-            None
+    /// Block the calling thread on the owned `mio::Poll` until the stream is
+    /// readable. NOTE: parks the OS thread; drive it on a dedicated recv thread,
+    /// not inside an async executor worker.
+    pub fn ready(&mut self) -> Result<(), TransportError> {
+        loop {
+            self.poll
+                .poll(&mut self.events, None)
+                .map_err(TransportError::Io)?;
+            if self
+                .events
+                .iter()
+                .any(|ev| ev.token() == TCP_TOKEN && ev.is_readable())
+            {
+                return Ok(());
+            }
         }
+    }
+
+    pub fn pool(&self) -> &SharedVecPool {
+        &self.pool
     }
 
     pub fn send(&mut self, buf: &[u8]) -> Result<(), TransportError> {
@@ -150,8 +152,9 @@ impl TcpTransport {
                 }
                 Ok(n) => off += n,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.writable = false;
-                    self.poll_ready(Some(Duration::from_millis(50)))?;
+                    self.poll
+                        .poll(&mut self.events, Some(Duration::from_millis(50)))
+                        .map_err(TransportError::Io)?;
                 }
                 Err(e) => return Err(TransportError::Io(e)),
             }
@@ -197,22 +200,4 @@ fn apply_tcp_socket_opts(
         }
     }
     Ok(())
-}
-
-pub struct TcpFrame<'a> {
-    pub bytes: &'a [u8],
-}
-
-impl AsPayload for TcpFrame<'_> {
-    fn payload(&self) -> &[u8] {
-        self.bytes
-    }
-
-    fn sequence(&self) -> u64 {
-        0
-    }
-
-    fn stream_id(&self) -> u8 {
-        0
-    }
 }

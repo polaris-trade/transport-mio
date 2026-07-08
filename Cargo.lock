@@ -551,9 +551,7 @@ dependencies = [
 
 [[package]]
 name = "transport_core"
-version = "0.2.1"
-source = "sparse+https://registry-oss-rs.fly.dev/api/v1/crates/"
-checksum = "7d92789c9a8df2b395679144fe8123c873cb4f75a8b4d39340a24e5d61ea5f45"
+version = "0.3.0"
 dependencies = [
  "fastrand",
  "serde",
@@ -612,3 +610,7 @@ checksum = "0592e1c9d151f854e6fd382574c3a0855250e1d9b2f99d9281c6e6391af352f1"
 dependencies = [
  "memchr",
 ]
+
+[[patch.unused]]
+name = "transport_tokio"
+version = "0.3.0"
