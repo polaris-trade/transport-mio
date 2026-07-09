@@ -9,6 +9,7 @@
 
 use std::{
     io,
+    mem::MaybeUninit,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
     thread,
@@ -16,7 +17,7 @@ use std::{
 };
 
 use mio::{Events, Interest, Poll, Token, event::Source};
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use socket2::{Domain, Protocol, SockAddr, SockRef, Socket, Type};
 use transport_core::{
     AffinityConfig, AsPayload, BatchConfig, BindConfig, BufferPool, FrameBatch, MulticastInterface,
     RecvBufConfig, RingConfig, SendBufConfig, TransportError,
@@ -144,12 +145,8 @@ impl UdpTransport {
     /// NOTE: parks the OS thread; run it on a dedicated recv thread, not inside
     /// an async executor worker.
     pub fn ready(&mut self) -> Result<(), TransportError> {
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            if probe_readable(self.sock.as_raw_fd()).map_err(TransportError::Io)? {
-                return Ok(());
-            }
+        if probe_readable(SockRef::from(&self.sock)).map_err(TransportError::Io)? {
+            return Ok(());
         }
         loop {
             self.poll
@@ -235,25 +232,25 @@ impl UdpTransport {
     }
 }
 
-/// Non-blocking `poll(2)` probe for pending data, bypassing mio's owned
-/// epoll/kqueue instance. That instance is edge-triggered internally: once it
-/// delivers a readable edge it won't re-signal for data arriving while the
+/// Non-blocking `MSG_PEEK` probe for pending data, bypassing mio's owned
+/// epoll/kqueue/IOCP instance. That instance is edge-triggered internally: once
+/// it delivers a readable edge it won't re-signal for data arriving while the
 /// socket stays non-empty, so a partial `recv_burst` drain could otherwise
-/// stall a later `ready()` call. `poll(2)` reads kernel socket state directly,
-/// independent of mio's edge tracking.
-#[cfg(unix)]
-pub(crate) fn probe_readable(fd: std::os::fd::RawFd) -> io::Result<bool> {
-    let mut fds = [libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    }];
-    // SAFETY: fds points at one stack-local pollfd; len arg matches array size.
-    let ret = unsafe { libc::poll(fds.as_mut_ptr(), 1, 0) };
-    if ret < 0 {
-        return Err(io::Error::last_os_error());
+/// stall a later `ready()` call. A peek reads kernel socket state directly,
+/// independent of mio's edge tracking, and works the same on every platform.
+///
+/// The 1-byte buffer only asks "is a datagram queued". Unix truncates the peek
+/// and returns Ok; Windows instead fails with WSAEMSGSIZE (10040) when the
+/// queued datagram is larger than the buffer. Both mean a datagram is ready.
+pub(crate) fn probe_readable(sock: SockRef<'_>) -> io::Result<bool> {
+    let mut buf = [MaybeUninit::<u8>::uninit(); 1];
+    match sock.peek(&mut buf) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(false),
+        #[cfg(windows)]
+        Err(e) if e.raw_os_error() == Some(10040) => Ok(true),
+        Err(e) => Err(e),
     }
-    Ok(fds[0].revents & libc::POLLIN != 0)
 }
 
 /// Warn when CPU-affinity knobs are set on the mio backend, which owns no

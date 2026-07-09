@@ -899,7 +899,6 @@ version = "0.3.2"
 dependencies = [
  "allocation-counter",
  "criterion",
- "libc",
  "mio",
  "mockall",
  "parking_lot",

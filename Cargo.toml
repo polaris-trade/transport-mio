@@ -15,7 +15,6 @@ publish = false
 transport_core = { git = "https://github.com/polaris-trade/transport-core", tag = "transport_core-v0.3.2" }
 mio = { version = "1.0.4", features = ["net", "os-poll", "os-ext"] }
 socket2 = { version = "0.6.4", features = ["all"] }
-libc = "0.2.163"
 parking_lot = "0.12.4"
 thiserror = "2.0.18"
 tracing = "0.1.44"

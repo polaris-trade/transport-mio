@@ -130,12 +130,8 @@ impl TcpTransport {
     /// NOTE: parks the OS thread; drive it on a dedicated recv thread, not
     /// inside an async executor worker.
     pub fn ready(&mut self) -> Result<(), TransportError> {
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            if probe_readable(self.stream.as_raw_fd()).map_err(TransportError::Io)? {
-                return Ok(());
-            }
+        if probe_readable(SockRef::from(&self.stream)).map_err(TransportError::Io)? {
+            return Ok(());
         }
         loop {
             self.poll
