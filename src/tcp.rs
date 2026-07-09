@@ -19,9 +19,10 @@ use transport_core::{
     AffinityConfig, BindConfig, RecvBufConfig, RingConfig, SendBufConfig, TransportError,
 };
 
-#[cfg(unix)]
-use crate::udp::probe_readable;
-use crate::{pool::SharedVecPool, udp::warn_affinity};
+use crate::{
+    pool::SharedVecPool,
+    udp::{probe_readable, warn_affinity},
+};
 
 const TCP_TOKEN: Token = Token(1);
 const EVENTS_CAP: usize = 16;
