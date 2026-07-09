@@ -90,7 +90,8 @@ impl UdpTransport {
     /// Reap up to `max` ready datagrams into `out`, each frame owning a pool
     /// slab it wrote into (zero further copy). Returns the count. `Ok(0)` means
     /// the socket had nothing ready; `PoolExhausted` means no landing slab was
-    /// free while data was pending (backpressure, let the kernel drop).
+    /// free on acquire, regardless of whether the socket itself still has data
+    /// queued (backpressure signal, let the kernel drop).
     pub fn recv_burst(
         &mut self,
         out: &mut FrameBatch<UdpFrame>,
@@ -134,9 +135,22 @@ impl UdpTransport {
 
     /// Block the calling thread on the owned `mio::Poll` until the socket is
     /// readable, for callers that drive readiness instead of busy-polling
-    /// `recv_burst`. NOTE: parks the OS thread; run it on a dedicated recv
-    /// thread, not inside an async executor worker.
+    /// `recv_burst`. Probes the fd via `poll(2)` first (see `probe_readable`):
+    /// mio's epoll/kqueue readiness is edge-triggered and will not re-fire if a
+    /// prior wake was only partially drained (bounded `max`, `PoolExhausted`),
+    /// so the probe catches data still queued from an earlier edge. Callers
+    /// should still drain `recv_burst` to `Ok(0)` after each wake rather than
+    /// relying solely on this self-heal.
+    /// NOTE: parks the OS thread; run it on a dedicated recv thread, not inside
+    /// an async executor worker.
     pub fn ready(&mut self) -> Result<(), TransportError> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            if probe_readable(self.sock.as_raw_fd()).map_err(TransportError::Io)? {
+                return Ok(());
+            }
+        }
         loop {
             self.poll
                 .poll(&mut self.events, None)
@@ -219,6 +233,27 @@ impl UdpTransport {
     pub fn batch_recv_size(&self) -> u32 {
         self.batch_recv_size
     }
+}
+
+/// Non-blocking `poll(2)` probe for pending data, bypassing mio's owned
+/// epoll/kqueue instance. That instance is edge-triggered internally: once it
+/// delivers a readable edge it won't re-signal for data arriving while the
+/// socket stays non-empty, so a partial `recv_burst` drain could otherwise
+/// stall a later `ready()` call. `poll(2)` reads kernel socket state directly,
+/// independent of mio's edge tracking.
+#[cfg(unix)]
+pub(crate) fn probe_readable(fd: std::os::fd::RawFd) -> io::Result<bool> {
+    let mut fds = [libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    }];
+    // SAFETY: fds points at one stack-local pollfd; len arg matches array size.
+    let ret = unsafe { libc::poll(fds.as_mut_ptr(), 1, 0) };
+    if ret < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(fds[0].revents & libc::POLLIN != 0)
 }
 
 /// Warn when CPU-affinity knobs are set on the mio backend, which owns no
