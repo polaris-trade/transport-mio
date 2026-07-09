@@ -33,7 +33,7 @@ tokio = { version = "1.48.0", default-features = false, features = [
   "net",
   "time",
 ] }
-criterion = "0.5"
+criterion = "0.8.2"
 allocation-counter = "0.8.1"
 
 [[bench]]
