@@ -12,10 +12,9 @@ readme = "README.md"
 publish = false
 
 [dependencies]
-transport_core = { git = "https://github.com/polaris-trade/transport-core", tag = "transport_core-v0.3.0" }
+transport_core = { git = "https://github.com/polaris-trade/transport-core", tag = "transport_core-v0.3.2" }
 mio = { version = "1.0.4", features = ["net", "os-poll", "os-ext"] }
 socket2 = { version = "0.6.4", features = ["all"] }
-libc = "0.2.163"
 parking_lot = "0.12.4"
 thiserror = "2.0.18"
 tracing = "0.1.44"
@@ -23,7 +22,7 @@ tracing = "0.1.44"
 [dev-dependencies]
 mockall = "0.15"
 rstest = "0.26.1"
-transport_core = { git = "https://github.com/polaris-trade/transport-core", tag = "transport_core-v0.3.0", features = [
+transport_core = { git = "https://github.com/polaris-trade/transport-core", tag = "transport_core-v0.3.2", features = [
   "testing",
 ] }
 tokio = { version = "1.48.0", default-features = false, features = [

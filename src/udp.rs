@@ -9,6 +9,7 @@
 
 use std::{
     io,
+    mem::MaybeUninit,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
     thread,
@@ -16,7 +17,7 @@ use std::{
 };
 
 use mio::{Events, Interest, Poll, Token, event::Source};
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use socket2::{Domain, Protocol, SockAddr, SockRef, Socket, Type};
 use transport_core::{
     AffinityConfig, AsPayload, BatchConfig, BindConfig, BufferPool, FrameBatch, MulticastInterface,
     RecvBufConfig, RingConfig, SendBufConfig, TransportError,
@@ -90,7 +91,8 @@ impl UdpTransport {
     /// Reap up to `max` ready datagrams into `out`, each frame owning a pool
     /// slab it wrote into (zero further copy). Returns the count. `Ok(0)` means
     /// the socket had nothing ready; `PoolExhausted` means no landing slab was
-    /// free while data was pending (backpressure, let the kernel drop).
+    /// free on acquire, regardless of whether the socket itself still has data
+    /// queued (backpressure signal, let the kernel drop).
     pub fn recv_burst(
         &mut self,
         out: &mut FrameBatch<UdpFrame>,
@@ -134,9 +136,18 @@ impl UdpTransport {
 
     /// Block the calling thread on the owned `mio::Poll` until the socket is
     /// readable, for callers that drive readiness instead of busy-polling
-    /// `recv_burst`. NOTE: parks the OS thread; run it on a dedicated recv
-    /// thread, not inside an async executor worker.
+    /// `recv_burst`. Probes the fd via `poll(2)` first (see `probe_readable`):
+    /// mio's epoll/kqueue readiness is edge-triggered and will not re-fire if a
+    /// prior wake was only partially drained (bounded `max`, `PoolExhausted`),
+    /// so the probe catches data still queued from an earlier edge. Callers
+    /// should still drain `recv_burst` to `Ok(0)` after each wake rather than
+    /// relying solely on this self-heal.
+    /// NOTE: parks the OS thread; run it on a dedicated recv thread, not inside
+    /// an async executor worker.
     pub fn ready(&mut self) -> Result<(), TransportError> {
+        if probe_readable(SockRef::from(&self.sock)).map_err(TransportError::Io)? {
+            return Ok(());
+        }
         loop {
             self.poll
                 .poll(&mut self.events, None)
@@ -218,6 +229,27 @@ impl UdpTransport {
 
     pub fn batch_recv_size(&self) -> u32 {
         self.batch_recv_size
+    }
+}
+
+/// Non-blocking `MSG_PEEK` probe for pending data, bypassing mio's owned
+/// epoll/kqueue/IOCP instance. That instance is edge-triggered internally: once
+/// it delivers a readable edge it won't re-signal for data arriving while the
+/// socket stays non-empty, so a partial `recv_burst` drain could otherwise
+/// stall a later `ready()` call. A peek reads kernel socket state directly,
+/// independent of mio's edge tracking, and works the same on every platform.
+///
+/// The 1-byte buffer only asks "is a datagram queued". Unix truncates the peek
+/// and returns Ok; Windows instead fails with WSAEMSGSIZE (10040) when the
+/// queued datagram is larger than the buffer. Both mean a datagram is ready.
+pub(crate) fn probe_readable(sock: SockRef<'_>) -> io::Result<bool> {
+    let mut buf = [MaybeUninit::<u8>::uninit(); 1];
+    match sock.peek(&mut buf) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(false),
+        #[cfg(windows)]
+        Err(e) if e.raw_os_error() == Some(10040) => Ok(true),
+        Err(e) => Err(e),
     }
 }
 

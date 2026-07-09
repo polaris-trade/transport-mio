@@ -19,7 +19,10 @@ use transport_core::{
     AffinityConfig, BindConfig, RecvBufConfig, RingConfig, SendBufConfig, TransportError,
 };
 
-use crate::{pool::SharedVecPool, udp::warn_affinity};
+use crate::{
+    pool::SharedVecPool,
+    udp::{probe_readable, warn_affinity},
+};
 
 const TCP_TOKEN: Token = Token(1);
 const EVENTS_CAP: usize = 16;
@@ -119,9 +122,18 @@ impl TcpTransport {
     }
 
     /// Block the calling thread on the owned `mio::Poll` until the stream is
-    /// readable. NOTE: parks the OS thread; drive it on a dedicated recv thread,
-    /// not inside an async executor worker.
+    /// readable. Probes the fd via `poll(2)` first (see
+    /// `udp::probe_readable`): mio's epoll/kqueue readiness is edge-triggered
+    /// and won't re-fire if a prior wake landed only a partial `recv_into`, so
+    /// the probe catches bytes still queued from an earlier edge. Callers
+    /// should still drain `recv_into` to `Ok(0)` after each wake rather than
+    /// relying solely on this self-heal.
+    /// NOTE: parks the OS thread; drive it on a dedicated recv thread, not
+    /// inside an async executor worker.
     pub fn ready(&mut self) -> Result<(), TransportError> {
+        if probe_readable(SockRef::from(&self.stream)).map_err(TransportError::Io)? {
+            return Ok(());
+        }
         loop {
             self.poll
                 .poll(&mut self.events, None)
