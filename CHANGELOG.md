@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
+## [0.3.2](https://github.com/polaris-trade/transport-mio/compare/transport_mio-v0.3.1...transport_mio-v0.3.2) (2026-07-09)
+
+
+### Build
+
+* **deps:** re-tag criterion bump ([df3ff4e](https://github.com/polaris-trade/transport-mio/commit/df3ff4edc001ce367f08a136f6be51446f88a43e))
+
 ## [0.3.1](https://github.com/polaris-trade/transport-mio/compare/transport_mio-v0.3.0...transport_mio-v0.3.1) (2026-07-09)
 
 
