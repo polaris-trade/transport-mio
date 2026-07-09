@@ -34,6 +34,10 @@ Wraps `mio::net::UdpSocket` with `socket2` for pre-bind option config, registere
 
 Sending is non-blocking with a short `thread::sleep(1ms)` retry on `WouldBlock`. UDP send rarely blocks in practice; a full retry-via-mio-writable path would add complexity for an edge case the loopback and production paths both avoid. `SO_BUSY_POLL`, `SO_RXQ_OVFL`, and timestamping stay out of this backend; that kernel-drop and busy-poll wire-up lives in the tokio and kernel-bypass backends.
 
+### Recv benchmark
+
+[[benches/recv.rs#bench_recv_burst]] reports `recv_burst` ns/msg and allocs/msg at batch depths 1/8/32/64 over a loopback UDP flood, mirroring the tokio backend bench. Allocs/msg asserts zero on the steady-state path per depth.
+
 ## TCP path
 
 Wraps `mio::net::TcpStream` registered for `READABLE | WRITABLE`; `WRITABLE` drives connect completion and the send retry loop.
