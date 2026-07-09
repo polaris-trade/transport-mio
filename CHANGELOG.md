@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
+## [0.3.3](https://github.com/polaris-trade/transport-mio/compare/transport_mio-v0.3.2...transport_mio-v0.3.3) (2026-07-09)
+
+
+### Bug fixes
+
+* **mio:** probe socket before parking in ready() ([#17](https://github.com/polaris-trade/transport-mio/issues/17)) ([b6fe123](https://github.com/polaris-trade/transport-mio/commit/b6fe1237f06e63091933ffc2aafe915ce531a137))
+
 ## [0.3.2](https://github.com/polaris-trade/transport-mio/compare/transport_mio-v0.3.1...transport_mio-v0.3.2) (2026-07-09)
 
 
