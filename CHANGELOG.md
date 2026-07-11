@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
+## [0.4.0](https://github.com/polaris-trade/transport-mio/compare/transport_mio-v0.3.3...transport_mio-v0.4.0) (2026-07-11)
+
+
+### Features
+
+* **telemetry:** add recv-counter ([#19](https://github.com/polaris-trade/transport-mio/issues/19)) ([275ce73](https://github.com/polaris-trade/transport-mio/commit/275ce7308ac7d3afcd66ff68533d3d8b2e3f5188))
+
 ## [0.3.3](https://github.com/polaris-trade/transport-mio/compare/transport_mio-v0.3.2...transport_mio-v0.3.3) (2026-07-09)
 
 
