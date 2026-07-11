@@ -16,11 +16,11 @@ Bounded slab pool with a fixed slot array and a `parking_lot` free list. Recv la
 
 [[src/pool.rs#VecSlab]] is the owned handle: an `Arc<VecPool>`, a slot index, and a length. [[src/pool.rs#VecSlab#buf_mut]] exposes the full-width slab for a recv to write into, then [[src/pool.rs#VecSlab#set_len]] records how many bytes landed, which bounds `AsRef<[u8]>`. `Drop` pushes the slot back onto the free list.
 
-## Stats
+## Metrics
 
-Receiver-side atomic counters shared between the recv loop and observability without a mutex.
+Recv throughput exports through `observability-core`'s gated hot path instead of a hand-rolled counter struct. `metrics` is a runtime dep of the lib crate; `observability` (the backend, tracing + Prometheus/OTLP) is dev-only, wired by [[examples/recv_metrics.rs]].
 
-[[src/stats.rs#ReceiverStats]] records per-datagram packet and byte counts on each reap; `snapshot` reads them into a `ReceiverStatsSnapshot` for export.
+[[src/udp.rs#UdpTransport#recv_burst]] accumulates `bytes` across the reap loop, then behind one `observability_core::metrics_enabled()` check per burst increments `transport.recv.packets` and `transport.recv.bytes`, both labeled `backend => "mio-udp"`. Off-gate this is a single thread-local `Cell` read: no atomic, no allocation, so the `benches/recv.rs` steady-state zero-alloc assertion holds either way.
 
 ## UDP path
 
