@@ -1,3 +1,7 @@
+> **⚠️ Archived. This crate moved to [`polaris-trade/transports`](https://github.com/polaris-trade/transports).**
+>
+> `transport_mio` now lives at [`crates/mio`](https://github.com/polaris-trade/transports/tree/main/crates/mio) in the `transports` workspace; new releases are cut there as `transport_mio-vX.Y.Z`. Existing `transport_mio-v*` tags on this repository stay resolvable for historical pins. This repository is read-only. Open issues and PRs against `transports`.
+
 # transport-mio
 
 Runtime-free backend for the Polaris networking stack. Implements the
